@@ -72,6 +72,7 @@ impl QuorumCreditContract {
                 slash_cooldown_seconds: 0,
                 emergency_pause_enabled: false,
                 successor_admin: None,
+                admin_stake: 0,
             },
         );
 

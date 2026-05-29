@@ -1035,6 +1035,116 @@ pub fn get_admin_metrics(env: Env, admin: Address) -> AdminMetrics {
         })
 }
 
+/// Deposit admin stake tokens. The caller must be a registered admin.
+/// Transfers `amount` tokens from the caller to the contract.
+pub fn deposit_admin_stake(env: Env, admin: Address, amount: i128) {
+    admin.require_auth();
+
+    if !is_admin(&env, &admin) {
+        panic_with_error!(&env, ContractError::UnauthorizedCaller);
+    }
+    if amount <= 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let token = crate::helpers::primary_token(&env);
+    token.transfer(&admin, &env.current_contract_address(), &amount);
+
+    let current: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminStakeBalance(admin.clone()))
+        .unwrap_or(0);
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminStakeBalance(admin.clone()), &(current + amount));
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("stake_dep")),
+        (admin, amount, current + amount),
+    );
+}
+
+/// Withdraw admin stake. Caller must be the admin themselves.
+/// Amount defaults to the full balance; specify a partial amount to withdraw less.
+pub fn withdraw_admin_stake(env: Env, admin: Address, amount: i128) {
+    admin.require_auth();
+
+    if !is_admin(&env, &admin) {
+        panic_with_error!(&env, ContractError::UnauthorizedCaller);
+    }
+    if amount <= 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let current: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminStakeBalance(admin.clone()))
+        .unwrap_or(0);
+
+    if amount > current {
+        panic_with_error!(&env, ContractError::InsufficientFunds);
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminStakeBalance(admin.clone()), &(current - amount));
+
+    let token = crate::helpers::primary_token(&env);
+    token.transfer(&env.current_contract_address(), &admin, &amount);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("stake_wd")),
+        (admin, amount, current - amount),
+    );
+}
+
+/// Slash an admin's staked tokens. Requires multi-sig admin approval.
+/// Slashed amount is sent to the slash treasury.
+pub fn slash_admin_stake(
+    env: Env,
+    admin_signers: Vec<Address>,
+    target: Address,
+    amount: i128,
+) {
+    require_admin_approval(&env, &admin_signers);
+
+    if amount <= 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let current: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminStakeBalance(target.clone()))
+        .unwrap_or(0);
+
+    let slashed = if amount > current { current } else { amount };
+
+    env.storage()
+        .instance()
+        .set(
+            &DataKey::AdminStakeBalance(target.clone()),
+            &(current - slashed),
+        );
+
+    crate::helpers::add_slash_balance(&env, slashed);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("stake_slsh")),
+        (target, slashed, admin_signers.get(0).unwrap()),
+    );
+}
+
+/// View the current stake balance for an admin address.
+pub fn get_admin_stake_balance(env: Env, admin: Address) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::AdminStakeBalance(admin))
+        .unwrap_or(0)
+}
+
 // ── Issue #683: Emergency pause ───────────────────────────────────────────────
 
 pub fn emergency_pause(env: Env, admin: Address) -> Result<(), ContractError> {

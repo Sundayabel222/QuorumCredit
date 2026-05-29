@@ -83,6 +83,7 @@ impl QuorumCreditContract {
                 oracle_address: None,
                 slash_delay_seconds: 0,
                 successor_admin: None,
+                admin_stake: 0,
             },
         );
 
@@ -822,5 +823,26 @@ impl QuorumCreditContract {
 
     pub fn get_admin_metrics(env: Env, admin: Address) -> AdminMetrics {
         admin::get_admin_metrics(env, admin)
+    }
+
+    pub fn deposit_admin_stake(env: Env, admin: Address, amount: i128) {
+        admin::deposit_admin_stake(env, admin, amount)
+    }
+
+    pub fn withdraw_admin_stake(env: Env, admin: Address, amount: i128) {
+        admin::withdraw_admin_stake(env, admin, amount)
+    }
+
+    pub fn slash_admin_stake(
+        env: Env,
+        admin_signers: Vec<Address>,
+        target: Address,
+        amount: i128,
+    ) {
+        admin::slash_admin_stake(env, admin_signers, target, amount)
+    }
+
+    pub fn get_admin_stake_balance(env: Env, admin: Address) -> i128 {
+        admin::get_admin_stake_balance(env, admin)
     }
 }

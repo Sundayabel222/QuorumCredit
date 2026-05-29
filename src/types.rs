@@ -294,6 +294,8 @@ pub enum DataKey {
     BridgeValidated(Address, u32),
     /// Admin performance metrics per admin address.
     AdminMetrics(Address),
+    /// Admin stake balance per admin address.
+    AdminStakeBalance(Address),
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -395,6 +397,8 @@ pub struct Config {
     /// Designated successor admin address that can claim admin rights without multi-sig approval
     /// when current admins are unavailable.
     pub successor_admin: Option<Address>,
+    /// Required stake amount per admin (in stroops). 0 = no stake required.
+    pub admin_stake: i128,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
