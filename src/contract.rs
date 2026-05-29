@@ -73,6 +73,7 @@ impl QuorumCreditContract {
                 emergency_pause_enabled: false,
                 successor_admin: None,
                 admin_stake: 0,
+                vesting_schedule: None,
             },
         );
 

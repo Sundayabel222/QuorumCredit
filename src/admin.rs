@@ -3,7 +3,8 @@ use crate::helpers::{
     validate_admin_config,
 };
 use crate::types::{
-    AdminActionProposal, AdminMetrics, Config, ConfigUpdateKey, ConfigUpdateProposal, DataKey,
+    AdminActionProposal, AdminCompensation, AdminMetrics, Config, ConfigUpdateKey,
+    ConfigUpdateProposal, DataKey, VestingSchedule,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env, Vec};
 use crate::errors::ContractError;
@@ -1142,6 +1143,223 @@ pub fn get_admin_stake_balance(env: Env, admin: Address) -> i128 {
     env.storage()
         .instance()
         .get(&DataKey::AdminStakeBalance(admin))
+        .unwrap_or(0)
+}
+
+/// Internal: update vesting for an admin, accruing new rewards and computing
+/// how much of the unvested balance has become claimable.
+fn update_admin_vesting(env: &Env, admin: &Address, cfg: &Config) {
+    let schedule = match &cfg.vesting_schedule {
+        Some(s) => s.clone(),
+        None => return,
+    };
+
+    let mut comp: AdminCompensation = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminCompensation(admin.clone()))
+        .unwrap_or(AdminCompensation {
+            unvested: 0,
+            claimable: 0,
+            total_claimed: 0,
+            last_update: env.ledger().timestamp(),
+            start: env.ledger().timestamp(),
+        });
+
+    let now = env.ledger().timestamp();
+    if comp.start == 0 {
+        comp.start = now;
+        comp.last_update = now;
+    }
+
+    let elapsed = now.saturating_sub(comp.start);
+    let total_periods_elapsed = elapsed / schedule.period_duration;
+
+    // Vested = proportional to periods elapsed after cliff
+    if total_periods_elapsed > schedule.cliff_periods as u64 {
+        let vested_periods = total_periods_elapsed - schedule.cliff_periods as u64;
+        let total_reward_per_period = schedule.reward_per_period;
+        let max_vestable = vested_periods * total_reward_per_period as u64;
+        // Clamp to available unvested
+        let newly_vested = core::cmp::min(comp.unvested, max_vestable as i128);
+        comp.claimable = comp.claimable.saturating_add(newly_vested);
+        comp.unvested = comp.unvested.saturating_sub(newly_vested);
+    }
+
+    comp.last_update = now;
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminCompensation(admin.clone()), &comp);
+}
+
+/// Fund the admin compensation pool. Anyone can contribute.
+pub fn fund_admin_compensation(env: Env, from: Address, amount: i128) {
+    from.require_auth();
+
+    if amount <= 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let token = crate::helpers::primary_token(&env);
+    token.transfer(&from, &env.current_contract_address(), &amount);
+
+    let pool: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminCompensationPool)
+        .unwrap_or(0);
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminCompensationPool, &(pool + amount));
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("fund_comp")),
+        (from, amount, pool + amount),
+    );
+}
+
+/// Set the vesting schedule for admin compensation. Requires multi-sig admin approval.
+/// Pass `None` to disable vesting.
+pub fn set_vesting_schedule(
+    env: Env,
+    admin_signers: Vec<Address>,
+    schedule: Option<VestingSchedule>,
+) {
+    require_admin_approval(&env, &admin_signers);
+
+    if let Some(ref s) = schedule {
+        if s.period_duration == 0 || s.reward_per_period <= 0 {
+            panic_with_error!(&env, ContractError::InvalidAmount);
+        }
+    }
+
+    let mut cfg = config(&env);
+    cfg.vesting_schedule = schedule.clone();
+    env.storage().instance().set(&DataKey::Config, &cfg);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("set_vest")),
+        (admin_signers.get(0).unwrap(), schedule),
+    );
+}
+
+/// Accrue a reward period's compensation to all registered admins.
+/// Adds `reward_per_period` tokens to each admin's unvested balance from the pool.
+/// Requires multi-sig admin approval.
+pub fn accrue_admin_compensation(env: Env, admin_signers: Vec<Address>) {
+    require_admin_approval(&env, &admin_signers);
+
+    let cfg = config(&env);
+    let schedule = match &cfg.vesting_schedule {
+        Some(s) => s.clone(),
+        None => panic_with_error!(&env, ContractError::InvalidAmount),
+    };
+
+    // Check pool has enough funds
+    let pool: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminCompensationPool)
+        .unwrap_or(0);
+    let total_cost = schedule.reward_per_period * cfg.admins.len() as i128;
+    if total_cost > pool {
+        panic_with_error!(&env, ContractError::InsufficientFunds);
+    }
+
+    // Deduct from pool
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminCompensationPool, &(pool - total_cost));
+
+    // Credit each admin
+    let now = env.ledger().timestamp();
+    for admin in cfg.admins.iter() {
+        // Update existing vesting first
+        update_admin_vesting(&env, &admin, &cfg);
+
+        let mut comp: AdminCompensation = env
+            .storage()
+            .instance()
+            .get(&DataKey::AdminCompensation(admin.clone()))
+            .unwrap_or(AdminCompensation {
+                unvested: 0,
+                claimable: 0,
+                total_claimed: 0,
+                last_update: now,
+                start: now,
+            });
+
+        comp.unvested = comp.unvested.saturating_add(schedule.reward_per_period);
+        comp.last_update = now;
+        env.storage()
+            .instance()
+            .set(&DataKey::AdminCompensation(admin.clone()), &comp);
+    }
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("accrue_c")),
+        (admin_signers.get(0).unwrap(), total_cost),
+    );
+}
+
+/// Claim vested admin compensation for the caller.
+pub fn claim_admin_compensation(env: Env, admin: Address) -> Result<(), ContractError> {
+    admin.require_auth();
+
+    let cfg = config(&env);
+    update_admin_vesting(&env, &admin, &cfg);
+
+    let mut comp: AdminCompensation = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminCompensation(admin.clone()))
+        .ok_or(ContractError::UnauthorizedCaller)?;
+
+    if comp.claimable <= 0 {
+        return Err(ContractError::InsufficientFunds);
+    }
+
+    let amount = comp.claimable;
+    comp.total_claimed = comp.total_claimed.saturating_add(amount);
+    comp.claimable = 0;
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminCompensation(admin.clone()), &comp);
+
+    let token = crate::helpers::primary_token(&env);
+    token.transfer(&env.current_contract_address(), &admin, &amount);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("claim_c")),
+        (admin, amount, comp.total_claimed),
+    );
+
+    Ok(())
+}
+
+/// View the compensation state for an admin address.
+pub fn get_admin_compensation(env: Env, admin: Address) -> AdminCompensation {
+    let cfg = config(&env);
+    // Update vesting to return current state
+    update_admin_vesting(&env, &admin, &cfg);
+
+    env.storage()
+        .instance()
+        .get(&DataKey::AdminCompensation(admin))
+        .unwrap_or(AdminCompensation {
+            unvested: 0,
+            claimable: 0,
+            total_claimed: 0,
+            last_update: env.ledger().timestamp(),
+            start: 0,
+        })
+}
+
+/// View the total balance in the admin compensation pool.
+pub fn get_admin_compensation_pool(env: Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::AdminCompensationPool)
         .unwrap_or(0)
 }
 

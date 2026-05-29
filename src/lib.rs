@@ -84,6 +84,7 @@ impl QuorumCreditContract {
                 slash_delay_seconds: 0,
                 successor_admin: None,
                 admin_stake: 0,
+                vesting_schedule: None,
             },
         );
 
@@ -844,5 +845,33 @@ impl QuorumCreditContract {
 
     pub fn get_admin_stake_balance(env: Env, admin: Address) -> i128 {
         admin::get_admin_stake_balance(env, admin)
+    }
+
+    pub fn fund_admin_compensation(env: Env, from: Address, amount: i128) {
+        admin::fund_admin_compensation(env, from, amount)
+    }
+
+    pub fn set_vesting_schedule(
+        env: Env,
+        admin_signers: Vec<Address>,
+        schedule: Option<VestingSchedule>,
+    ) {
+        admin::set_vesting_schedule(env, admin_signers, schedule)
+    }
+
+    pub fn accrue_admin_compensation(env: Env, admin_signers: Vec<Address>) {
+        admin::accrue_admin_compensation(env, admin_signers)
+    }
+
+    pub fn claim_admin_compensation(env: Env, admin: Address) -> Result<(), ContractError> {
+        admin::claim_admin_compensation(env, admin)
+    }
+
+    pub fn get_admin_compensation(env: Env, admin: Address) -> AdminCompensation {
+        admin::get_admin_compensation(env, admin)
+    }
+
+    pub fn get_admin_compensation_pool(env: Env) -> i128 {
+        admin::get_admin_compensation_pool(env)
     }
 }

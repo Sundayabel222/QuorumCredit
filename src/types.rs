@@ -296,6 +296,10 @@ pub enum DataKey {
     AdminMetrics(Address),
     /// Admin stake balance per admin address.
     AdminStakeBalance(Address),
+    /// Global admin compensation pool balance.
+    AdminCompensationPool,
+    /// Per-admin compensation tracking.
+    AdminCompensation(Address),
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -399,6 +403,8 @@ pub struct Config {
     pub successor_admin: Option<Address>,
     /// Required stake amount per admin (in stroops). 0 = no stake required.
     pub admin_stake: i128,
+    /// Optional vesting schedule for admin compensation.
+    pub vesting_schedule: Option<VestingSchedule>,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -703,6 +709,35 @@ pub struct AdminMetrics {
     pub response_time_samples: u32,
     /// Decision quality score (0–100), updated based on action outcomes.
     pub decision_quality_score: u32,
+}
+
+/// Defines how admin compensation vests over time.
+#[contracttype]
+#[derive(Clone)]
+pub struct VestingSchedule {
+    /// Amount of tokens awarded per admin per vesting period (in stroops).
+    pub reward_per_period: i128,
+    /// Duration of each vesting period in seconds (e.g. 30 * 24 * 60 * 60 for 30 days).
+    pub period_duration: u64,
+    /// Number of periods before any tokens vest (cliff). Tokens only become claimable
+    /// after this many periods have elapsed.
+    pub cliff_periods: u32,
+}
+
+/// Per-admin compensation state tracking accrued and vested amounts.
+#[contracttype]
+#[derive(Clone)]
+pub struct AdminCompensation {
+    /// Total unvested (locked) tokens accruing for this admin.
+    pub unvested: i128,
+    /// Total vested (claimable) tokens available for withdrawal.
+    pub claimable: i128,
+    /// Cumulative tokens already claimed by this admin.
+    pub total_claimed: i128,
+    /// Ledger timestamp of the last vesting computation.
+    pub last_update: u64,
+    /// Ledger timestamp when this admin's compensation tracking started.
+    pub start: u64,
 }
 
 // ── Pagination ────────────────────────────────────────────────────────────────

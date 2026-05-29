@@ -30,6 +30,7 @@ mod tests {
             confirmation_required: false,
             successor_admin: None,
             admin_stake: 0,
+            vesting_schedule: None,
         }
     }
 
