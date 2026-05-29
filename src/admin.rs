@@ -2,7 +2,9 @@ use crate::helpers::{
     config, is_admin, require_admin_approval, require_not_paused, require_valid_token,
     validate_admin_config,
 };
-use crate::types::{Config, ConfigUpdateKey, ConfigUpdateProposal, DataKey, AdminActionProposal};
+use crate::types::{
+    AdminActionProposal, AdminMetrics, Config, ConfigUpdateKey, ConfigUpdateProposal, DataKey,
+};
 use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env, Vec};
 use crate::errors::ContractError;
 
@@ -716,6 +718,46 @@ pub fn get_prepayment_penalty_bps(env: Env) -> u32 {
         .unwrap_or(0)
 }
 
+/// Update admin performance metrics for the given admin address.
+fn update_admin_metrics(env: &Env, admin: &Address, field: &str, response_time: Option<u64>) {
+    let mut metrics: AdminMetrics = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminMetrics(admin.clone()))
+        .unwrap_or(AdminMetrics {
+            total_actions_proposed: 0,
+            total_actions_approved: 0,
+            total_actions_executed: 0,
+            total_response_time: 0,
+            response_time_samples: 0,
+            decision_quality_score: 100,
+        });
+
+    match field {
+        "proposed" => metrics.total_actions_proposed += 1,
+        "approved" => {
+            metrics.total_actions_approved += 1;
+            if let Some(rt) = response_time {
+                metrics.total_response_time += rt;
+                metrics.response_time_samples += 1;
+            }
+        }
+        "executed" => {
+            metrics.total_actions_executed += 1;
+            // Bump quality score on successful execution (capped at 100)
+            metrics.decision_quality_score = metrics
+                .decision_quality_score
+                .saturating_add(1)
+                .min(100);
+        }
+        _ => {}
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminMetrics(admin.clone()), &metrics);
+}
+
 /// Issue #554: Propose an admin action (e.g., pause, slash, config change).
 pub fn propose_admin_action(
     env: Env,
@@ -747,6 +789,8 @@ pub fn propose_admin_action(
     env.storage()
         .instance()
         .set(&DataKey::AdminActionCounter, &action_id);
+
+    update_admin_metrics(&env, &proposer, "proposed", None);
 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("propose")),
@@ -784,11 +828,17 @@ pub fn approve_admin_action(
         return Err(ContractError::AlreadyVoted);
     }
 
+    // Track response time: time from proposal creation to approval
+    let now = env.ledger().timestamp();
+    let response_time = now.saturating_sub(proposal.created_at);
+
     proposal.approvals.push_back(admin.clone());
 
     env.storage()
         .instance()
         .set(&DataKey::AdminAction(action_id), &proposal);
+
+    update_admin_metrics(&env, &admin, "approved", Some(response_time));
 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("approve")),
@@ -819,6 +869,11 @@ pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractErro
     env.storage()
         .instance()
         .set(&DataKey::AdminAction(action_id), &proposal);
+
+    // Record execution metrics for all approving admins
+    for approver in proposal.approvals.iter() {
+        update_admin_metrics(&env, &approver, "executed", None);
+    }
 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("execute")),
@@ -964,6 +1019,20 @@ pub fn get_config_update_proposal(env: Env, proposal_id: u64) -> Option<ConfigUp
     env.storage()
         .instance()
         .get(&DataKey::ConfigUpdateProposal(proposal_id))
+}
+
+pub fn get_admin_metrics(env: Env, admin: Address) -> AdminMetrics {
+    env.storage()
+        .instance()
+        .get(&DataKey::AdminMetrics(admin.clone()))
+        .unwrap_or(AdminMetrics {
+            total_actions_proposed: 0,
+            total_actions_approved: 0,
+            total_actions_executed: 0,
+            total_response_time: 0,
+            response_time_samples: 0,
+            decision_quality_score: 100,
+        })
 }
 
 // ── Issue #683: Emergency pause ───────────────────────────────────────────────

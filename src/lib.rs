@@ -819,4 +819,8 @@ impl QuorumCreditContract {
     pub fn claim_successor_admin(env: Env) -> Result<(), ContractError> {
         admin::claim_successor_admin(env)
     }
+
+    pub fn get_admin_metrics(env: Env, admin: Address) -> AdminMetrics {
+        admin::get_admin_metrics(env, admin)
+    }
 }

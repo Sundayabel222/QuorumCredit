@@ -292,6 +292,8 @@ pub enum DataKey {
     VoucherInsurance(Address, Address),
     /// Cross-chain bridge validation status: (voucher, chain_id) → bool.
     BridgeValidated(Address, u32),
+    /// Admin performance metrics per admin address.
+    AdminMetrics(Address),
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -679,6 +681,24 @@ pub struct AdminActionProposal {
     pub approvals: Vec<Address>,
     pub created_at: u64,
     pub executed: bool,
+}
+
+/// Admin performance metrics tracking response time and decision quality.
+#[contracttype]
+#[derive(Clone)]
+pub struct AdminMetrics {
+    /// Total number of admin actions proposed by this admin.
+    pub total_actions_proposed: u32,
+    /// Total number of admin actions approved by this admin.
+    pub total_actions_approved: u32,
+    /// Total number of admin actions executed that this admin participated in.
+    pub total_actions_executed: u32,
+    /// Cumulative response time in seconds across all approvals (sum of approval_time - proposal_time).
+    pub total_response_time: u64,
+    /// Number of response time samples recorded (for computing average).
+    pub response_time_samples: u32,
+    /// Decision quality score (0–100), updated based on action outcomes.
+    pub decision_quality_score: u32,
 }
 
 // ── Pagination ────────────────────────────────────────────────────────────────
